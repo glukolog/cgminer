@@ -71,7 +71,7 @@ unsigned int tm_i2c_req(int fd, unsigned char addr, unsigned char cmd, unsigned 
 
 int tm_i2c_detect(unsigned char slot) {
 	if (slot < 0 || slot > 31) return 0;
-	return tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + slot, TM_GET_CORE0, 0);
+	return tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + (slot >> 1), TM_GET_CORE0, 0);
 }
 
 float tm_i2c_getcore0(unsigned char slot) {
@@ -88,7 +88,7 @@ float tm_i2c_gettemp(unsigned char slot) {
 	if (slot < 0 || slot > 31) return 0;
 	return tm_i2c_Data2Temp(tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + slot, TM_GET_TEMP, 0));
 }
-
+/*
 void tm_i2c_set_oe(unsigned char slot) {
 	if (slot < 0 || slot > 31) return;
 	tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + slot, TM_SET_OE, 0);
@@ -97,6 +97,24 @@ void tm_i2c_set_oe(unsigned char slot) {
 void tm_i2c_clear_oe(unsigned char slot) {
 	if (slot < 0 || slot > 31) return;
 	tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + slot, TM_SET_OE, 1);
+}
+*/
+void tm_i2c_set_oe(unsigned char slot) {
+	if (slot < 0 || slot > 31) return;
+	if (slot & 1) {
+		tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + (slot >> 1), TM_SET_OE1, 0);
+	} else {
+		tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + (slot >> 1), TM_SET_OE0, 0);
+	}
+}
+
+void tm_i2c_clear_oe(unsigned char slot) {
+	if (slot < 0 || slot > 31) return;
+	if (slot & 1) {
+		tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + (slot >> 1), TM_SET_OE1, 1);
+	} else {
+		tm_i2c_req(tm_i2c_fd, (TM_ADDR >> 1) + (slot >> 1), TM_SET_OE0, 1);
+	}
 }
 
 unsigned char tm_i2c_slot2addr(unsigned char slot) {

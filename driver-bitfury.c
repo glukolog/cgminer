@@ -29,11 +29,13 @@
 #include <sha2.h>
 #include "libbitfury.h"
 #include "util.h"
+#include "tm_i2cm.h"
 
 #define GOLDEN_BACKLOG 5
 #define LINE_LEN 2048
 
 struct device_drv bitfury_drv;
+static int voltage_applyed = 2;
 
 // Forward declarations
 static void bitfury_disable(struct thr_info* thr);
@@ -41,11 +43,22 @@ static bool bitfury_prepare(struct thr_info *thr);
 int calc_stat(time_t * stat_ts, time_t stat, struct timeval now);
 double shares_to_ghashes(int shares, int seconds);
 
-static void bitfury_detect(void)
-{
+unsigned char slot_swap(unsigned char slot) {
+	unsigned char new_slot = slot;
+	switch(slot) {
+		case  8 : new_slot = 12; break;
+		case  9 : new_slot = 13; break;
+		case 12 : new_slot =  8; break;
+		case 13 : new_slot =  9; break;
+	}
+	return new_slot;
+}
+
+static void bitfury_detect(void) {
 	int chip_n;
 	int i;
 	struct cgpu_info *bitfury_info;
+	static struct bitfury_device *devices;
 
 	bitfury_info = calloc(1, sizeof(struct cgpu_info));
 	bitfury_info->drv = &bitfury_drv;
@@ -62,6 +75,17 @@ static void bitfury_detect(void)
 
 	bitfury_info->chip_n = chip_n;
 	add_cgpu(bitfury_info);
+
+	// ### Set all vltage to 0.82V ###
+	applog(LOG_INFO, "Set voltage!");
+	devices = bitfury_info->devices;
+	for(i = 1 ; i < chip_n ; i++) {
+		if (devices[i].slot != devices[i - 1].slot || i == 1) {
+			unsigned char slot = devices[i].slot;
+			applog(LOG_WARNING, "Slot[%02d]: %.3f V\t%.1f C", slot,
+				tm_i2c_set_voltage_abs(slot_swap(slot), 0.835), tm_i2c_gettemp(slot_swap(slot)));
+		}
+	}
 }
 
 static uint32_t bitfury_checkNonce(struct work *work, uint32_t nonce)
@@ -79,7 +103,7 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	unsigned char line[LINE_LEN];
 	int short_stat = 10;
 	static time_t short_out_t;
-	int long_stat = 1800;
+	int long_stat = 900;
 	static time_t long_out_t;
 	int long_long_stat = 60 * 30;
 	static time_t long_long_out_t;
@@ -91,7 +115,7 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 
 	if (!first) {
 		for (i = 0; i < chip_n; i++) {
-			devices[i].osc6_bits = 54;
+			devices[i].osc6_bits = 55;
 		}
 		for (i = 0; i < chip_n; i++) {
 			send_reinit(devices[i].slot, devices[i].fasync, devices[i].osc6_bits);
@@ -114,8 +138,8 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 	nmsleep(5);
 
 	cgtime(&now);
-	chip = 0;
-	for (;chip < chip_n; chip++) {
+	//chip = 0;
+	for (chip = 0 ; chip < chip_n; chip++) {
 		if (devices[chip].job_switched) {
 			int i,j;
 			int *res = devices[chip].results;
@@ -163,7 +187,7 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 		char stat_lines[32][LINE_LEN] = {0};
 		int len, k;
 		double gh[32][8] = {0};
-		double ghsum = 0, gh1h = 0, gh2h = 0;
+		double ghsum = 0;
 		unsigned strange_counter = 0;
 
 		for (chip = 0; chip < chip_n; chip++) {
@@ -172,37 +196,38 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			len = strlen(stat_lines[devices[chip].slot]);
 			ghash = shares_to_ghashes(shares_found, short_stat);
 			gh[devices[chip].slot][chip & 0x07] = ghash;
-			snprintf(stat_lines[devices[chip].slot] + len, LINE_LEN - len, "%.1f-%3.0f ", ghash, devices[chip].mhz);
-
-			if(short_out_t && ghash < 0.5) {
-				applog(LOG_WARNING, "Chip_id %d FREQ CHANGE\n", chip);
-				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits - 1);
+			//snprintf(stat_lines[devices[chip].slot] + len, LINE_LEN - len, "%d-%.1f-%3.0f ", devices[chip].osc6_bits, ghash, devices[chip].mhz);
+			snprintf(stat_lines[devices[chip].slot] + len, LINE_LEN - len, "%d-%3.0f%c",
+				devices[chip].osc6_bits, devices[chip].mhz, (ghash != 0) ? ' ' : '!');
+			devices[chip].mhz_stat = (devices[chip].mhz + devices[chip].mhz_stat * 9) / 10;
+			if(short_out_t && ghash < 0.5 && devices[chip].osc6_bits > 50) {
+				applog(LOG_WARNING, "Chip_id %d FREQ CHANGE", chip);
+				send_freq(devices[chip].slot, devices[chip].fasync, 1);
 				nmsleep(1);
 				send_freq(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits);
 			}
 			shares_total += shares_found;
 			shares_first += chip < 4 ? shares_found : 0;
 			shares_last += chip > 3 ? shares_found : 0;
+			if (devices[chip].strange_counter > short_stat && devices[chip].osc6_bits == 54) devices[chip].osc6_bits -= 4; //!!!
+			if (devices[chip].strange_counter > 3 && devices[chip].osc6_bits > 54) devices[chip].osc6_bits--; //!!!
 			strange_counter += devices[chip].strange_counter;
 			devices[chip].strange_counter = 0;
 		}
-		sprintf(line, "vvvvwww SHORT stat %ds: wwwvvvv", short_stat);
-		applog(LOG_WARNING, line);
-		sprintf(line, "stranges: %u", strange_counter);
-		applog(LOG_WARNING, line);
+		applog(LOG_WARNING, "vvvvwww SHORT stat %ds, stranges: %u wwwvvvv", short_stat, strange_counter);
 		for(i = 0; i < 32; i++)
 			if(strlen(stat_lines[i])) {
+				double temp;
 				len = strlen(stat_lines[i]);
 				ghsum = 0;
-				gh1h = 0;
-				gh2h = 0;
-				for(k = 0; k < 4; k++) {
-					gh1h += gh[i][k];
-					gh2h += gh[i][k+4];
-					ghsum += gh[i][k] + gh[i][k+4];
-				}
-				snprintf(stat_lines[i] + len, LINE_LEN - len, "- %2.1f + %2.1f = %2.1f slot %i ", gh1h, gh2h, ghsum, i);
+				for(k = 0; k < 8; k++) ghsum += gh[i][k];
+				temp = tm_i2c_gettemp(slot_swap(i));
+				snprintf(stat_lines[i] + len, LINE_LEN - len, "= %2.1f %.1f slot %2d", ghsum, temp, i);
 				applog(LOG_WARNING, stat_lines[i]);
+				if (temp > 75 && temp < 170) {
+					tm_i2c_set_vid(slot_swap(i), 0);
+					applog(LOG_WARNING, "-----=====!!!!! Slot %d set low voltage !!!!!=====-----", i);
+				}
 			}
 		short_out_t = now.tv_sec;
 	}
@@ -212,7 +237,8 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 		char stat_lines[32][LINE_LEN] = {0};
 		int len, k;
 		double gh[32][8] = {0};
-		double ghsum = 0, gh1h = 0, gh2h = 0;
+		double ghsum = 0;
+		double mhz_slot[32] = {0}, mhz_count[32] = {0};
 
 		for (chip = 0; chip < chip_n; chip++) {
 			int shares_found = calc_stat(devices[chip].stat_ts, long_stat, now);
@@ -220,28 +246,44 @@ static int64_t bitfury_scanHash(struct thr_info *thr)
 			len = strlen(stat_lines[devices[chip].slot]);
 			ghash = shares_to_ghashes(shares_found, long_stat);
 			gh[devices[chip].slot][chip & 0x07] = ghash;
-			snprintf(stat_lines[devices[chip].slot] + len, LINE_LEN - len, "%.1f-%3.0f ", ghash, devices[chip].mhz);
+			snprintf(stat_lines[devices[chip].slot] + len, LINE_LEN - len, "%.1f-%3.0f ", ghash, devices[chip].mhz_stat);
+			if (devices[chip].osc6_bits != 50) {
+				mhz_slot[devices[chip].slot] += devices[chip].mhz_stat;
+				mhz_count[devices[chip].slot]++;
+			}
+			if (ghash < 2.4) devices[chip].osc6_bits++;
+			if (devices[chip].osc6_bits > 57) devices[chip].osc6_bits = 53;
+			if (ghash < 1) send_reinit(devices[chip].slot, devices[chip].fasync, devices[chip].osc6_bits); // !!!
 
 			shares_total += shares_found;
 			shares_first += chip < 4 ? shares_found : 0;
 			shares_last += chip > 3 ? shares_found : 0;
 		}
-		sprintf(line, "!!!_________ LONG stat %ds: ___________!!!", long_stat);
-		applog(LOG_WARNING, line);
+		applog(LOG_WARNING, "!!!_________ LONG stat %ds: ___________!!!", long_stat);
 		for(i = 0; i < 32; i++)
 			if(strlen(stat_lines[i])) {
 				len = strlen(stat_lines[i]);
 				ghsum = 0;
-				gh1h = 0;
-				gh2h = 0;
-				for(k = 0; k < 4; k++) {
-					gh1h += gh[i][k];
-					gh2h += gh[i][k+4];
-					ghsum += gh[i][k] + gh[i][k+4];
-				}
-				snprintf(stat_lines[i] + len, LINE_LEN - len, "- %2.1f + %2.1f = %2.1f slot %i ", gh1h, gh2h, ghsum, i);
+				mhz_slot[i] /= mhz_count[i];
+				for(k = 0; k < 8; k++) ghsum += gh[i][k];
+				snprintf(stat_lines[i] + len, LINE_LEN - len, "= %2.1f-%3.0f slot %2i", ghsum, mhz_slot[i], i);
 				applog(LOG_WARNING, stat_lines[i]);
 			}
+		// ### Set voltage ###
+		if (voltage_applyed) {
+			applog(LOG_WARNING, "Renew voltage");
+			if (voltage_applyed == 1)
+				for(i = 0; i < 32; i++) {
+					if (!strlen(stat_lines[i])) continue;
+					if (mhz_slot[i] < 215) {
+						applog(LOG_WARNING, "Slot[%02d] new voltage: %.3f V\t%.1f C",
+							i, tm_i2c_set_voltage_abs(slot_swap(i), 0.91), tm_i2c_gettemp(slot_swap(i)));
+					} else {
+						applog(LOG_WARNING, "Slot[%02d]: no changes", i);
+					}
+				}
+			voltage_applyed--;
+		}
 		long_out_t = now.tv_sec;
 	}
 

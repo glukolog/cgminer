@@ -70,6 +70,7 @@ struct bitfury_device {
 	int osc_fast;
 	int req1_done, req2_done;
 	double mhz;
+	double mhz_stat;
 	double ns;
 	unsigned slot;
 	unsigned fasync;
@@ -77,6 +78,7 @@ struct bitfury_device {
 };
 
 int libbitfury_readHashData(unsigned int *res);
+bool bitfury_fudge_nonce(void *midstate, uint32_t m7, uint32_t ntime, uint32_t nbits, uint32_t *nonce_p);
 int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n);
 void work_to_payload(struct bitfury_payload *p, struct work *w);
 struct timespec t_diff(struct timespec start, struct timespec end);

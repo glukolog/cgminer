@@ -26,6 +26,7 @@
 #define TM_MODE_AUTO    0
 #define TM_MODE_MANUAL  1
 
+static unsigned leds;
 static int tm_i2c_fd;
 
 typedef struct {
@@ -37,13 +38,15 @@ typedef struct {
 int tm_i2c_init();
 void tm_i2c_close();
 unsigned int tm_i2c_req(int fd, unsigned char addr, unsigned char cmd, unsigned int data);
-float tm_i2c_Data2Temp(unsigned int ans);
-float tm_i2c_Data2Core(unsigned int ans);
-float tm_i2c_gettemp(unsigned char slot);
-float tm_i2c_getcore0(unsigned char slot);
-float tm_i2c_getcore1(unsigned char slot);
+double tm_i2c_Data2Temp(unsigned int ans);
+double tm_i2c_Data2Core(unsigned int ans);
+double tm_i2c_gettemp(unsigned char slot);
+double tm_i2c_getcore0(unsigned char slot);
+double tm_i2c_getcore1(unsigned char slot);
 void tm_i2c_set_oe(unsigned char slot);
 void tm_i2c_clear_oe(unsigned char slot);
 int tm_i2c_detect(unsigned char slot);
 unsigned char tm_i2c_slot2addr(unsigned char slot);
+double tm_i2c_set_voltage_abs(unsigned char slot2, double voltage);
+unsigned int tm_i2c_set_vid(unsigned char slot, unsigned char vid);
 

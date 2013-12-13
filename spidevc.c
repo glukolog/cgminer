@@ -63,7 +63,7 @@ int spi_reset(int a)
 	INP_GPIO(10); OUT_GPIO(10);
 	INP_GPIO(11); OUT_GPIO(11);
 	GPIO_SET = 1 << 11; // Set SCK
-	for (i = 0; i < 32; i++) { // On standard settings this unoptimized code produces 1 Mhz freq.
+	for (i = 0; i < 16; i++) { // On standard settings this unoptimized code produces 1 Mhz freq.
 		GPIO_SET = 1 << 10;
 		for (j = 0; j < len; j++) {
 			a *= a;
@@ -93,7 +93,7 @@ int spi_txrx(const char *wrbuf, char *rdbuf, int bufsz)
 	struct spi_ioc_transfer tr[16];
 
 	memset(&tr,0,sizeof(tr));
-	mode = 0; bits = 8; speed = 4000000;
+	mode = 0; bits = 8; speed = 1000000;
 
 	spi_reset(1234);
 	fd = open("/dev/spidev0.0", O_RDWR);
@@ -133,7 +133,7 @@ int spi_txrx(const char *wrbuf, char *rdbuf, int bufsz)
         }
 
 	close(fd);
-	spi_reset(4321);
+	//spi_reset(4321);
 
 	return 0;
 }

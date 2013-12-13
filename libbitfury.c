@@ -31,7 +31,7 @@
 #include <string.h>
 
 #include "miner.h"
-#include "tm_i2c.h"
+#include "tm_i2cm.h"
 #include "libbitfury.h"
 
 #include "spidevc.h"
@@ -265,14 +265,14 @@ int get_counter(unsigned int *newbuf, unsigned int *oldbuf) {
 }
 
 int get_diff(unsigned int *newbuf, unsigned int *oldbuf) {
-		int j;
-		unsigned counter = 0;
-		for(j = 0; j < 16; j++) {
-				if (newbuf[j] != oldbuf[j]) {
-						counter++;
-				}
+	int j;
+	unsigned counter = 0;
+	for(j = 0; j < 16; j++) {
+		if (newbuf[j] != oldbuf[j]) {
+			counter++;
 		}
-		return counter;
+	}
+	return counter;
 }
 
 int detect_chip(int chip_n) {
@@ -351,6 +351,7 @@ int libbitfury_detectChips(struct bitfury_device *devices) {
 	clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
 	for (i = 0; i < 32; i++) {
 		int slot_detected = tm_i2c_detect(i) != -1;
+		//printf("slot[%d]=%d\n", i, slot_detected);
 		slot_on[i] = slot_detected;
 		tm_i2c_clear_oe(i);
 		nmsleep(1);
@@ -360,6 +361,7 @@ int libbitfury_detectChips(struct bitfury_device *devices) {
 		if (slot_on[i]) {
 			int chip_n = 0;
 			int chip_detected;
+			applog(LOG_INFO, "Scan slot %d", i);
 			tm_i2c_set_oe(i);
 			do {
 				chip_detected = detect_chip(chip_n);
@@ -464,6 +466,22 @@ void work_to_payload(struct bitfury_payload *p, struct work *w) {
 	p->nbits = bswap_32(*(unsigned *)(flipped_data + 72));
 }
 
+bool bitfury_fudge_nonce(void *midstate, uint32_t m7, uint32_t ntime, uint32_t nbits, uint32_t *nonce_p) {
+	static const uint32_t offsets[] = {0, 0xffc00000, 0xff800000, 0x02800000, 0x02C00000, 0x00400000};
+	uint32_t nonce;
+	int i;
+
+	for (i = 0; i < 6; i++) {
+		nonce = *nonce_p + offsets[i];
+		if (rehash(midstate, m7, ntime, nbits, nonce)) {
+			*nonce_p = nonce;
+			if (i >2) printf("found %d\n", i);
+			return true;
+		}
+	}
+	return false;
+}
+
 int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 	int chip_id;
 	int buf_diff;
@@ -514,7 +532,8 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 			memcpy(newbuf, spi_getrxbuf()+4 + chip, 17*4);
 			d->counter1 = get_counter(newbuf, oldbuf);
 			buf_diff = get_diff(newbuf, oldbuf);
-			if (buf_diff > 4 || (d->counter1 > 0 && d->counter1 < 0x00400000 / 2)) {
+			//if (buf_diff > 4 || (d->counter1 > 0 && d->counter1 < 0x00400000 / 2)) {
+			if (buf_diff > 4 || (d->counter1 > 0 && d->counter1 < 0x00200000)) {
 				if (buf_diff > 4) {
 //					printf("AAA        chip_id: %d, buf_diff: %d, counter: %08x\n", chip_id, buf_diff, d->counter1);
 					memcpy(atrvec, p, 20*4);
@@ -545,55 +564,34 @@ int libbitfury_sendHashData(struct bitfury_device *bf, int chip_n) {
 			d->future_nonce = 0;
 			for (i = 0; i < 16; i++) {
 				if (oldbuf[i] != newbuf[i] && op && o2p) {
-					unsigned pn; //possible nonce
-					unsigned int s = 0; //TODO zero may be solution
+					uint32_t pn; //possible nonce
 					unsigned int old_f = 0;
 					if ((newbuf[i] & 0xFF) == 0xE0)
 						continue;
 					pn = decnonce(newbuf[i]);
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn) ? pn : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00400000) ? pn - 0x00400000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn-0x00800000) ? pn - 0x00800000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02800000) ? pn + 0x02800000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x02C00000) ? pn + 0x02C00000 : 0;
-					s |= rehash(op->midstate, op->m7, op->ntime, op->nbits, pn+0x00400000) ? pn + 0x00400000 : 0;
-					if (s) {
+					if (bitfury_fudge_nonce(op->midstate, op->m7, op->ntime, op->nbits, &pn)) {
 						int k;
 						int dup = 0;
 						for (k = 0; k < results_num; k++) {
-							if (results[k] == bswap_32(s)) {
+							if (results[k] == bswap_32(pn)) {
 								dup = 1;
 							}
 						}
 						if (!dup) {
-							results[results_num++] = bswap_32(s);
+							results[results_num++] = bswap_32(pn);
 							found++;
 						}
 					}
 
-					s = 0;
 					pn = decnonce(newbuf[i]);
-					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn) ? pn : 0;
-					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
-					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
-					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
-					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
-					s |= rehash(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
-					if (s) {
-						d->old_nonce = bswap_32(s);
+					if (bitfury_fudge_nonce(o2p->midstate, o2p->m7, o2p->ntime, o2p->nbits, &pn)) {
+						d->old_nonce = bswap_32(pn);
 						found++;
 					}
 
-					s = 0;
 					pn = decnonce(newbuf[i]);
-					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn) ? pn : 0;
-					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x400000) ? pn - 0x400000 : 0;
-					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn-0x800000) ? pn - 0x800000 : 0;
-					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2800000)? pn + 0x2800000 : 0;
-					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x2C00000)? pn + 0x2C00000 : 0;
-					s |= rehash(p->midstate, p->m7, p->ntime, p->nbits, pn+0x400000) ? pn + 0x400000 : 0;
-					if (s) {
-						d->future_nonce = bswap_32(s);
+					if (bitfury_fudge_nonce(p->midstate, p->m7, p->ntime, p->nbits, &pn)) {
+						d->future_nonce = bswap_32(pn);
 						found++;
 					}
 					if (!found) {
